@@ -2,10 +2,72 @@
 # frozen_string_literal: true
 
 require "bundler/setup"
-require "gitback"
+require "revisable"
 
-# You can add fixtures and/or initialization code here to make experimenting
-# with your gem easier. You can also use a different console, if you like.
+ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
+ActiveRecord::Base.logger = nil
+
+ActiveRecord::Schema.define do
+  create_table :revisable_blobs do |t|
+    t.string :sha, null: false, index: { unique: true }
+    t.text :data, null: false
+    t.integer :size, null: false
+    t.timestamps
+  end
+
+  create_table :revisable_commits do |t|
+    t.string :sha, null: false, index: { unique: true }
+    t.string :versionable_type, null: false
+    t.bigint :versionable_id, null: false
+    t.string :author_type
+    t.bigint :author_id
+    t.string :message, null: false
+    t.datetime :committed_at, null: false
+    t.timestamps
+  end
+
+  create_table :revisable_commit_parents do |t|
+    t.string :commit_sha, null: false
+    t.string :parent_sha, null: false
+    t.integer :position, null: false, default: 0
+  end
+
+  create_table :revisable_commit_fields do |t|
+    t.string :commit_sha, null: false
+    t.string :field_name, null: false
+    t.string :blob_sha, null: false
+  end
+
+  add_index :revisable_commit_fields, [:commit_sha, :field_name], unique: true
+
+  create_table :revisable_refs do |t|
+    t.string :versionable_type, null: false
+    t.bigint :versionable_id, null: false
+    t.string :name, null: false
+    t.string :ref_type, null: false
+    t.string :commit_sha, null: false
+    t.string :message
+    t.timestamps
+  end
+
+  add_index :revisable_refs, [:versionable_type, :versionable_id, :ref_type, :name],
+            unique: true, name: "index_revisable_refs_unique"
+
+  create_table :posts do |t|
+    t.string :title
+    t.text :body
+    t.timestamps
+  end
+end
+
+class Post < ActiveRecord::Base
+  include Revisable::Model
+  revisable :title, :body
+end
+
+puts "Revisable #{Revisable::VERSION} loaded with in-memory SQLite"
+puts "Post model ready with: revisable :title, :body"
+puts
 
 require "irb"
 IRB.start(__FILE__)
