@@ -73,7 +73,7 @@ module Revisable
       end
 
       repository.commit!(
-        branch: nil,
+        branch: into,
         author: author,
         message: message,
         fields: fields,

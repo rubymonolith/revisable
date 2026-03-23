@@ -291,6 +291,16 @@ RSpec.describe Revisable do
         expect(commit.merge?).to be true
         expect(commit.parent_shas.size).to eq(2)
       end
+
+      it "advances the target branch" do
+        merge = repo.merge("feature", into: "main")
+        commit = merge.commit!(repository: repo, author: user, message: "Merge feature")
+
+        snapshot = repo.at("main")
+        expect(snapshot.title).to eq("Updated Title")
+        expect(snapshot.body).to eq("New Body")
+        expect(repo.log("main").first.sha).to eq(commit.sha)
+      end
     end
 
     context "conflicting merge" do
