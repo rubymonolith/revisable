@@ -11,9 +11,7 @@ module Revisable
 
     # --- Commits ---
 
-    def commit!(branch: "main", author: nil, message:, fields:, parent_shas: nil)
-      timestamp = Time.current
-
+    def commit!(branch: "main", author: nil, message: nil, fields:, parent_shas: nil)
       # Resolve parent(s)
       if parent_shas.nil?
         ref = find_ref(branch, type: "branch") if branch
@@ -21,28 +19,29 @@ module Revisable
         parent_shas = parent_commit ? [parent_commit.sha] : []
       end
 
+      # Look up parent commits by SHA to get their IDs
+      parent_commits = parent_shas.map { |sha| Commit.find_by!(sha: sha) }
+
       # Build full field set: start from parent, overlay changes
-      parent_field_set = parent_shas.any? ? Commit.find_by!(sha: parent_shas.first).field_set : FieldSet.empty
-      blob_shas = {}
+      parent_field_set = parent_commits.any? ? parent_commits.first.field_set : FieldSet.empty
+      blob_map = {}
 
       versionable_fields.each do |field|
         if fields.key?(field)
-          blob = Blob.store(fields[field])
-          blob_shas[field] = blob.sha
+          blob_map[field] = Blob.store(fields[field])
         elsif parent_field_set[field]
-          blob_shas[field] = parent_field_set.sha_for(field)
+          blob_map[field] = parent_field_set[field]
         else
-          blob = Blob.store("")
-          blob_shas[field] = blob.sha
+          blob_map[field] = Blob.store("")
         end
       end
 
       # Compute commit SHA
+      blob_shas = blob_map.transform_values(&:sha)
       sha = Commit.build_sha(
         parent_shas: parent_shas,
         field_blobs: blob_shas,
-        message: message,
-        timestamp: timestamp
+        message: message
       )
 
       # Create commit
@@ -50,31 +49,34 @@ module Revisable
         sha: sha,
         versionable: versionable,
         author: author,
-        message: message,
-        committed_at: timestamp
+        message: message
       )
 
-      # Link parents
-      parent_shas.each_with_index do |parent_sha, i|
-        CommitParent.create!(commit_sha: sha, parent_sha: parent_sha, position: i)
+      # Bulk insert parents
+      if parent_commits.any?
+        parent_records = parent_commits.each_with_index.map do |parent, i|
+          { commit_id: commit.id, parent_id: parent.id, position: i }
+        end
+        CommitParent.insert_all(parent_records)
       end
 
-      # Create commit fields
-      blob_shas.each do |field, blob_sha|
-        CommitField.create!(commit_sha: sha, field_name: field.to_s, blob_sha: blob_sha)
+      # Bulk insert commit fields
+      field_records = blob_map.map do |field, blob|
+        { commit_id: commit.id, field_name: field.to_s, blob_id: blob.id }
       end
+      CommitField.insert_all(field_records)
 
       # Advance branch ref
       if branch
         ref = find_ref(branch, type: "branch")
         if ref
-          ref.advance!(sha)
+          ref.advance!(commit.id)
         else
           Ref.create!(
             versionable: versionable,
             name: branch,
             ref_type: "branch",
-            commit_sha: sha
+            commit_id: commit.id
           )
         end
       end
@@ -90,7 +92,7 @@ module Revisable
         versionable: versionable,
         name: name,
         ref_type: "branch",
-        commit_sha: source_ref.commit_sha
+        commit_id: source_ref.commit_id
       )
       Branch.new(ref)
     end
@@ -107,7 +109,7 @@ module Revisable
         versionable: versionable,
         name: name,
         ref_type: "tag",
-        commit_sha: source.commit_sha,
+        commit_id: source.commit_id,
         message: message
       )
       Tag.new(ref)
@@ -168,7 +170,11 @@ module Revisable
 
       snapshot = at(ref)
       attrs = snapshot.to_h
+
+      versionable.instance_variable_set(:@revisable_skip_auto_commit, true)
       versionable.update!(attrs)
+    ensure
+      versionable.instance_variable_set(:@revisable_skip_auto_commit, false)
     end
 
     private
@@ -192,63 +198,67 @@ module Revisable
     end
 
     def resolve_commit(ref_or_sha)
-      # Try as ref first (branch or tag)
       ref = find_ref(ref_or_sha)
       return ref.commit if ref
 
-      # Try as SHA
       commit = commits_scope.find_by(sha: ref_or_sha)
       return commit if commit
 
-      # Try as SHA prefix
       commit = commits_scope.where("sha LIKE ?", "#{ref_or_sha}%").first
       return commit if commit
 
       raise RefNotFoundError, "Could not resolve '#{ref_or_sha}'"
     end
 
+    # Walk commit history using a recursive CTE — single query instead of N+1
     def walk_history(commit, limit: nil)
-      result = []
-      queue = [commit]
-      visited = Set.new
+      sql = <<~SQL
+        WITH RECURSIVE history(id) AS (
+          SELECT id FROM revisable_commits WHERE id = ?
+          UNION ALL
+          SELECT cp.parent_id
+          FROM revisable_commit_parents cp
+          INNER JOIN history h ON h.id = cp.commit_id
+        )
+        SELECT revisable_commits.*
+        FROM revisable_commits
+        INNER JOIN history ON history.id = revisable_commits.id
+        WHERE revisable_commits.versionable_type = ?
+          AND revisable_commits.versionable_id = ?
+        ORDER BY revisable_commits.created_at DESC
+      SQL
 
-      while queue.any? && (limit.nil? || result.size < limit)
-        current = queue.shift
-        next if visited.include?(current.sha)
-        visited.add(current.sha)
+      sql += " LIMIT #{limit.to_i}" if limit
 
-        result << current
-
-        current.parents.order(committed_at: :desc).each do |parent|
-          queue << parent unless visited.include?(parent.sha)
-        end
-      end
-
-      result
+      Commit.find_by_sql([sql, commit.id, versionable.class.name, versionable.id])
     end
 
+    # Find common ancestor using two recursive CTEs
     def find_common_ancestor(commit_a, commit_b)
-      ancestors_a = collect_ancestors(commit_a)
-      ancestors_b = collect_ancestors(commit_b)
-      common = ancestors_a & ancestors_b
-      return nil if common.empty?
+      sql = <<~SQL
+        WITH RECURSIVE
+        ancestors_a(id) AS (
+          SELECT id FROM revisable_commits WHERE id = ?
+          UNION ALL
+          SELECT cp.parent_id
+          FROM revisable_commit_parents cp
+          INNER JOIN ancestors_a a ON a.id = cp.commit_id
+        ),
+        ancestors_b(id) AS (
+          SELECT id FROM revisable_commits WHERE id = ?
+          UNION ALL
+          SELECT cp.parent_id
+          FROM revisable_commit_parents cp
+          INNER JOIN ancestors_b b ON b.id = cp.commit_id
+        )
+        SELECT revisable_commits.*
+        FROM revisable_commits
+        WHERE id IN (SELECT id FROM ancestors_a INTERSECT SELECT id FROM ancestors_b)
+        ORDER BY revisable_commits.created_at DESC
+        LIMIT 1
+      SQL
 
-      # Return the most recent common ancestor
-      commits_scope.where(sha: common.to_a).order(committed_at: :desc).first
-    end
-
-    def collect_ancestors(commit)
-      ancestors = Set.new
-      queue = [commit]
-
-      while queue.any?
-        current = queue.shift
-        next if ancestors.include?(current.sha)
-        ancestors.add(current.sha)
-        current.parents.each { |p| queue << p }
-      end
-
-      ancestors
+      Commit.find_by_sql([sql, commit_a.id, commit_b.id]).first
     end
   end
 end

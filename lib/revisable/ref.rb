@@ -8,8 +8,7 @@ module Revisable
 
     belongs_to :commit,
       class_name: "Revisable::Commit",
-      foreign_key: :commit_sha,
-      primary_key: :sha
+      foreign_key: :commit_id
 
     validates :name, presence: true
     validates :ref_type, presence: true, inclusion: { in: %w[branch tag] }
@@ -26,13 +25,13 @@ module Revisable
       ref_type == "tag"
     end
 
-    def advance!(new_sha, expected_sha: nil)
-      if expected_sha
-        rows = self.class.where(id: id, commit_sha: expected_sha).update_all(commit_sha: new_sha)
+    def advance!(new_commit_id, expected_commit_id: nil)
+      if expected_commit_id
+        rows = self.class.where(id: id, commit_id: expected_commit_id).update_all(commit_id: new_commit_id)
         raise StaleRefError, "Ref #{name} was updated by another process" if rows == 0
-        self.commit_sha = new_sha
+        self.commit_id = new_commit_id
       else
-        update!(commit_sha: new_sha)
+        update!(commit_id: new_commit_id)
       end
     end
   end

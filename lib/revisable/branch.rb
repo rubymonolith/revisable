@@ -17,7 +17,7 @@ module Revisable
     end
 
     def commit_sha
-      ref.commit_sha
+      ref.commit.sha
     end
 
     def tip(fields:)

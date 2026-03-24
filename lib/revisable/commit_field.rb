@@ -6,13 +6,11 @@ module Revisable
 
     belongs_to :commit,
       class_name: "Revisable::Commit",
-      foreign_key: :commit_sha,
-      primary_key: :sha
+      foreign_key: :commit_id
 
     belongs_to :blob,
       class_name: "Revisable::Blob",
-      foreign_key: :blob_sha,
-      primary_key: :sha
+      foreign_key: :blob_id
 
     validates :field_name, presence: true
   end

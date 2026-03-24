@@ -8,7 +8,6 @@ module Revisable
 
     validates :sha, presence: true, uniqueness: true
     validates :data, presence: true
-    validates :size, presence: true
 
     def self.store(content)
       content = content.to_s
@@ -16,7 +15,6 @@ module Revisable
 
       find_or_create_by!(sha: sha) do |blob|
         blob.data = content
-        blob.size = content.bytesize
       end
     end
 

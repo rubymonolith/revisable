@@ -11,25 +11,24 @@ module Revisable
 
     has_many :commit_fields,
       class_name: "Revisable::CommitField",
-      foreign_key: :commit_sha,
-      primary_key: :sha,
+      foreign_key: :commit_id,
       dependent: :destroy
 
     has_many :parent_links,
       class_name: "Revisable::CommitParent",
-      foreign_key: :commit_sha,
-      primary_key: :sha,
+      foreign_key: :commit_id,
       dependent: :destroy
 
     validates :sha, presence: true, uniqueness: true
-    validates :message, presence: true
+
+    alias_attribute :committed_at, :created_at
 
     def parents
-      Commit.where(sha: parent_links.order(:position).pluck(:parent_sha))
+      Commit.where(id: parent_links.order(:position).select(:parent_id))
     end
 
     def parent_shas
-      parent_links.order(:position).pluck(:parent_sha)
+      Commit.where(id: parent_links.order(:position).select(:parent_id)).pluck(:sha)
     end
 
     def root?
@@ -53,12 +52,11 @@ module Revisable
       end
     end
 
-    def self.build_sha(parent_shas:, field_blobs:, message:, timestamp:)
+    def self.build_sha(parent_shas:, field_blobs:, message:)
       parts = [
         "parents:#{parent_shas.sort.join(',')}",
         "fields:#{field_blobs.sort.map { |k, v| "#{k}:#{v}" }.join(',')}",
-        "message:#{message}",
-        "timestamp:#{timestamp.iso8601}"
+        "message:#{message}"
       ]
       Digest::SHA256.hexdigest(parts.join("\n"))
     end
@@ -69,7 +67,10 @@ module Revisable
 
     belongs_to :commit,
       class_name: "Revisable::Commit",
-      foreign_key: :commit_sha,
-      primary_key: :sha
+      foreign_key: :commit_id
+
+    belongs_to :parent,
+      class_name: "Revisable::Commit",
+      foreign_key: :parent_id
   end
 end

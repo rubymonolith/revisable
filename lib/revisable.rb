@@ -16,7 +16,6 @@ require_relative "revisable/diff"
 require_relative "revisable/log"
 require_relative "revisable/merge_field"
 require_relative "revisable/merge"
-require_relative "revisable/current_author"
 
 # ActiveRecord models
 require_relative "revisable/blob"
@@ -29,7 +28,6 @@ require_relative "revisable/tag"
 # ActiveRecord integration
 require_relative "revisable/repository"
 require_relative "revisable/model"
-require_relative "revisable/active_record/controller_helpers"
 
 module Revisable
   class Error < StandardError; end

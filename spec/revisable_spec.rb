@@ -19,9 +19,9 @@ RSpec.describe Revisable do
       expect(blob1.sha).not_to eq(blob2.sha)
     end
 
-    it "tracks byte size" do
+    it "computes byte size from data" do
       blob = Revisable::Blob.store("hello")
-      expect(blob.size).to eq(5)
+      expect(blob.data.bytesize).to eq(5)
     end
   end
 
@@ -417,6 +417,17 @@ RSpec.describe Revisable do
 
       expect { repo.publish! }.to raise_error(Revisable::RefNotFoundError)
     end
+
+    it "does not create a duplicate auto-commit" do
+      repo.commit!(message: "First", fields: { title: "Hello", body: "World" })
+      repo.tag!("v1", ref: "main")
+
+      count_before = repo.log("main").size
+      repo.publish!("v1")
+      count_after = repo.log("main").size
+
+      expect(count_after).to eq(count_before)
+    end
   end
 
   describe "revisable DSL" do
@@ -439,7 +450,7 @@ RSpec.describe Revisable do
       log = new_post.repository.log("main")
 
       expect(log.size).to eq(1)
-      expect(log.first.message).to eq("Initial version")
+      expect(log.first.message).to be_nil
     end
 
     it "auto-commits on update" do
@@ -448,7 +459,6 @@ RSpec.describe Revisable do
 
       log = new_post.repository.log("main")
       expect(log.size).to eq(2)
-      expect(log.first.message).to include("title")
     end
 
     it "does not auto-commit when non-versionable fields change" do
@@ -469,38 +479,19 @@ RSpec.describe Revisable do
     end
   end
 
-  describe "CurrentAuthor" do
-    it "tracks the current author via thread-local" do
-      Revisable::CurrentAuthor.set(user)
-      expect(Revisable::CurrentAuthor.get).to eq(user)
-      Revisable::CurrentAuthor.clear
+  describe "author: lambda" do
+    it "auto-commits with the resolved author" do
+      Current.user = user
+      new_post = AuthoredPost.create!(title: "Authored", body: "Content")
+      commit = new_post.repository.log("main").first
+      expect(commit.author).to eq(user)
+      Current.user = nil
     end
 
-    it "scopes author to a block" do
-      Revisable::CurrentAuthor.with(user) do
-        expect(Revisable::CurrentAuthor.get).to eq(user)
-      end
-      expect(Revisable::CurrentAuthor.get).to be_nil
-    end
-
-    it "auto-commits with the current author" do
-      Revisable::CurrentAuthor.with(user) do
-        new_post = Post.create!(title: "Authored", body: "Content")
-        commit = new_post.repository.log("main").first
-        expect(commit.author).to eq(user)
-      end
-    end
-
-    it "restores previous author after block" do
-      other_user = User.create!(name: "Bob")
-      Revisable::CurrentAuthor.set(other_user)
-
-      Revisable::CurrentAuthor.with(user) do
-        expect(Revisable::CurrentAuthor.get).to eq(user)
-      end
-
-      expect(Revisable::CurrentAuthor.get).to eq(other_user)
-      Revisable::CurrentAuthor.clear
+    it "commits with nil author when no lambda configured" do
+      new_post = Post.create!(title: "No Author", body: "Content")
+      commit = new_post.repository.log("main").first
+      expect(commit.author).to be_nil
     end
   end
 end
